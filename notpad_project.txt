@@ -1,0 +1,691 @@
+import javax.swing.*;
+import javax.swing.filechooser.FileNameExtensionFilter;
+import javax.swing.undo.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.io.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
+
+public class n extends JFrame {
+    private JTabbedPane tabbedPane;
+    private JFileChooser fileChooser;
+    private Map<JTextArea, File> fileMap;
+    private Map<JTextArea, Boolean> savedStatusMap;
+    private Map<JTextArea, UndoManager> undoManagerMap;
+    private JLabel statusBar;
+    private Timer autosaveTimer;
+    private boolean isDarkTheme = false;
+    private int untitledCount = 1;
+
+    public n() {
+        super("Notepad Clone");
+        setSize(800, 600);
+        setLocationRelativeTo(null);
+        setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
+
+        initUI();
+        startAutosave();
+        setVisible(true);
+    }
+
+    private void initUI() {
+        tabbedPane = new JTabbedPane();
+        fileMap = new HashMap<>();
+        savedStatusMap = new HashMap<>();
+        undoManagerMap = new HashMap<>();
+
+        fileChooser = new JFileChooser();
+        fileChooser.setFileFilter(new FileNameExtensionFilter("Text Files", "txt"));
+
+        createMenuBar();
+        addNewTab("Untitled 1", null);
+
+        statusBar = new JLabel("Ln 1, Col 1");
+        add(tabbedPane, BorderLayout.CENTER);
+        add(statusBar, BorderLayout.SOUTH);
+
+        tabbedPane.addChangeListener(e -> updateStatusBar());
+
+        addWindowListener(new WindowAdapter() {
+            public void windowClosing(WindowEvent e) {
+                exitApplication();
+            }
+        });
+    }
+
+    private JTextArea getCurrentTextArea() {
+        Component component = tabbedPane.getSelectedComponent();
+        if (component instanceof JScrollPane) {
+            JScrollPane scrollPane = (JScrollPane) component;
+            return (JTextArea) scrollPane.getViewport().getView();
+        }
+        return null;
+    }
+
+    private File getCurrentFile() {
+        JTextArea textArea = getCurrentTextArea();
+        return textArea != null ? fileMap.get(textArea) : null;
+    }
+
+    private boolean isCurrentFileSaved() {
+        JTextArea textArea = getCurrentTextArea();
+        return textArea != null ? savedStatusMap.get(textArea) : true;
+    }
+
+    private UndoManager getCurrentUndoManager() {
+        JTextArea textArea = getCurrentTextArea();
+        return textArea != null ? undoManagerMap.get(textArea) : null;
+    }
+
+    private void addNewTab(String title, File file) {
+        JTextArea textArea = new JTextArea();
+        textArea.setFont(new Font("Consolas", Font.PLAIN, 14));
+        textArea.setLineWrap(true);
+        textArea.setWrapStyleWord(true);
+
+        UndoManager undoManager = new UndoManager();
+        textArea.getDocument().addUndoableEditListener(e -> {
+            undoManager.addEdit(e.getEdit());
+            savedStatusMap.put(textArea, false);
+            updateTabTitle(textArea);
+        });
+
+        textArea.addCaretListener(e -> updateStatusBar());
+        textArea.addKeyListener(new KeyAdapter() {
+            public void keyTyped(KeyEvent e) {
+                savedStatusMap.put(textArea, false);
+                updateTabTitle(textArea);
+            }
+        });
+
+        JScrollPane scrollPane = new JScrollPane(textArea);
+        tabbedPane.addTab(title, scrollPane);
+        tabbedPane.setSelectedComponent(scrollPane);
+
+        fileMap.put(textArea, file);
+        savedStatusMap.put(textArea, file == null ? false : true);
+        undoManagerMap.put(textArea, undoManager);
+
+        if (file != null) {
+            try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+                textArea.read(reader, null);
+                savedStatusMap.put(textArea, true);
+            } catch (IOException e) {
+                showError("Could not open file.");
+            }
+        }
+
+        // Add close button to tab
+        addCloseButtonToTab(tabbedPane.getTabCount() - 1);
+    }
+
+    private void addCloseButtonToTab(int index) {
+        JPanel tabPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        tabPanel.setOpaque(false);
+
+        JLabel tabLabel = new JLabel(tabbedPane.getTitleAt(index));
+        JButton closeButton = new JButton("×");
+        closeButton.setMargin(new Insets(0, 5, 0, 5));
+        closeButton.setBorderPainted(false);
+        closeButton.setContentAreaFilled(false);
+        closeButton.setFocusable(false);
+        closeButton.setFont(new Font("Arial", Font.BOLD, 14));
+
+        closeButton.addActionListener(e -> {
+            JTextArea textArea = getTextAreaFromTab(index);
+            if (confirmSave(textArea)) {
+                tabbedPane.remove(index);
+                fileMap.remove(textArea);
+                savedStatusMap.remove(textArea);
+                undoManagerMap.remove(textArea);
+
+                if (tabbedPane.getTabCount() == 0) {
+                    addNewTab("Untitled " + (++untitledCount), null);
+                }
+            }
+        });
+
+        tabPanel.add(tabLabel);
+        tabPanel.add(closeButton);
+
+        tabbedPane.setTabComponentAt(index, tabPanel);
+    }
+
+    private JTextArea getTextAreaFromTab(int index) {
+        Component component = tabbedPane.getComponentAt(index);
+        if (component instanceof JScrollPane) {
+            JScrollPane scrollPane = (JScrollPane) component;
+            return (JTextArea) scrollPane.getViewport().getView();
+        }
+        return null;
+    }
+
+    private void updateTabTitle(JTextArea textArea) {
+        for (int i = 0; i < tabbedPane.getTabCount(); i++) {
+            if (getTextAreaFromTab(i) == textArea) {
+                File file = fileMap.get(textArea);
+                String title = (file != null ? file.getName() : "Untitled " + untitledCount) +
+                        (savedStatusMap.get(textArea) ? "" : " *");
+                tabbedPane.setTitleAt(i, title);
+
+                // Update close button label
+                Component tabComponent = tabbedPane.getTabComponentAt(i);
+                if (tabComponent instanceof JPanel) {
+                    JPanel panel = (JPanel) tabComponent;
+                    for (Component comp : panel.getComponents()) {
+                        if (comp instanceof JLabel) {
+                            ((JLabel) comp).setText(title);
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    private void createMenuBar() {
+        JMenuBar menuBar = new JMenuBar();
+
+        // File menu
+        JMenu fileMenu = new JMenu("File");
+        fileMenu.setMnemonic('F');
+        fileMenu.add(createMenuItem("New Tab", e -> newTab(), KeyStroke.getKeyStroke("control T")));
+        fileMenu.add(createMenuItem("New Window", e -> newWindow(), KeyStroke.getKeyStroke("control shift N")));
+        fileMenu.add(createMenuItem("Open", e -> openFile(), KeyStroke.getKeyStroke("control O")));
+        fileMenu.add(createMenuItem("Open in New Tab", e -> openInNewTab(), KeyStroke.getKeyStroke("control shift O")));
+        fileMenu.add(createMenuItem("Save", e -> saveFile(), KeyStroke.getKeyStroke("control S")));
+        fileMenu.add(createMenuItem("Save As", e -> saveAsFile(), null));
+        fileMenu.add(createMenuItem("Save All", e -> saveAllFiles(), KeyStroke.getKeyStroke("control shift S")));
+        fileMenu.addSeparator();
+        fileMenu.add(createMenuItem("Close Tab", e -> closeCurrentTab(), KeyStroke.getKeyStroke("control W")));
+        fileMenu.add(createMenuItem("Close Window", e -> exitApplication(), KeyStroke.getKeyStroke("alt F4")));
+        menuBar.add(fileMenu);
+
+        // Edit menu
+        JMenu editMenu = new JMenu("Edit");
+        editMenu.setMnemonic('E');
+        editMenu.add(createMenuItem("Undo", e -> {
+            UndoManager undoManager = getCurrentUndoManager();
+            if (undoManager != null && undoManager.canUndo()) undoManager.undo();
+        }, KeyStroke.getKeyStroke("control Z")));
+
+        editMenu.add(createMenuItem("Redo", e -> {
+            UndoManager undoManager = getCurrentUndoManager();
+            if (undoManager != null && undoManager.canRedo()) undoManager.redo();
+        }, KeyStroke.getKeyStroke("control Y")));
+
+        editMenu.addSeparator();
+        editMenu.add(createMenuItem("Cut", e -> getCurrentTextArea().cut(), KeyStroke.getKeyStroke("control X")));
+        editMenu.add(createMenuItem("Copy", e -> getCurrentTextArea().copy(), KeyStroke.getKeyStroke("control C")));
+        editMenu.add(createMenuItem("Paste", e -> getCurrentTextArea().paste(), KeyStroke.getKeyStroke("control V")));
+        editMenu.add(createMenuItem("Delete", e -> getCurrentTextArea().replaceSelection(""), KeyStroke.getKeyStroke("DELETE")));
+        editMenu.add(createMenuItem("Select All", e -> getCurrentTextArea().selectAll(), KeyStroke.getKeyStroke("control A")));
+        menuBar.add(editMenu);
+
+        // Format menu
+        JMenu formatMenu = new JMenu("Format");
+        JCheckBoxMenuItem wordWrapItem = new JCheckBoxMenuItem("Word Wrap");
+        wordWrapItem.setSelected(true);
+        wordWrapItem.addActionListener(e -> {
+            boolean wrap = wordWrapItem.isSelected();
+            getCurrentTextArea().setLineWrap(wrap);
+            getCurrentTextArea().setWrapStyleWord(wrap);
+        });
+        formatMenu.add(wordWrapItem);
+
+        JMenuItem fontItem = new JMenuItem("Font...");
+        fontItem.addActionListener(e -> chooseFont());
+        formatMenu.add(fontItem);
+        menuBar.add(formatMenu);
+
+        // View menu
+        JMenu viewMenu = new JMenu("View");
+        JMenuItem themeToggle = new JMenuItem("Toggle Theme");
+        themeToggle.addActionListener(e -> toggleTheme());
+        viewMenu.add(themeToggle);
+        menuBar.add(viewMenu);
+
+        // Search menu
+        JMenu searchMenu = new JMenu("Search");
+        JMenuItem findReplaceItem = new JMenuItem("Find/Replace");
+        findReplaceItem.addActionListener(e -> findReplace());
+        searchMenu.add(findReplaceItem);
+        menuBar.add(searchMenu);
+
+        setJMenuBar(menuBar);
+    }
+
+    private JMenuItem createMenuItem(String text, ActionListener listener, KeyStroke shortcut) {
+        JMenuItem item = new JMenuItem(text);
+        item.addActionListener(listener);
+        if (shortcut != null) item.setAccelerator(shortcut);
+        return item;
+    }
+
+    private void updateStatusBar() {
+        JTextArea textArea = getCurrentTextArea();
+        if (textArea != null) {
+            try {
+                int caretPos = textArea.getCaretPosition();
+                int line = textArea.getLineOfOffset(caretPos);
+                int col = caretPos - textArea.getLineStartOffset(line);
+                statusBar.setText("Ln " + (line + 1) + ", Col " + (col + 1));
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void newTab() {
+        addNewTab("Untitled " + (++untitledCount), null);
+    }
+
+    private void newWindow() {
+        new n();
+    }
+
+    private void openFile() {
+        if (fileChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            File file = fileChooser.getSelectedFile();
+            JTextArea currentTextArea = getCurrentTextArea();
+            if (currentTextArea.getText().isEmpty() && fileMap.get(currentTextArea) == null) {
+                // Replace empty untitled tab
+                fileMap.put(currentTextArea, file);
+                try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+                    currentTextArea.read(reader, null);
+                    savedStatusMap.put(currentTextArea, true);
+                    updateTabTitle(currentTextArea);
+                } catch (IOException e) {
+                    showError("Could not open file.");
+                }
+            } else {
+                openInNewTab();
+            }
+        }
+    }
+
+    private void openInNewTab() {
+        if (fileChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            File file = fileChooser.getSelectedFile();
+            addNewTab(file.getName(), file);
+        }
+    }
+
+    private void saveFile() {
+        JTextArea textArea = getCurrentTextArea();
+        File file = fileMap.get(textArea);
+
+        if (file == null) {
+            saveAsFile();
+        } else {
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(file))) {
+                textArea.write(writer);
+                savedStatusMap.put(textArea, true);
+                updateTabTitle(textArea);
+            } catch (IOException e) {
+                showError("Could not save file.");
+            }
+        }
+    }
+
+    private void saveAsFile() {
+        JTextArea textArea = getCurrentTextArea();
+        if (fileChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+            File file = fileChooser.getSelectedFile();
+            if (!file.getName().toLowerCase().endsWith(".txt")) {
+                file = new File(file.getAbsolutePath() + ".txt");
+            }
+
+            fileMap.put(textArea, file);
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(file))) {
+                textArea.write(writer);
+                savedStatusMap.put(textArea, true);
+                updateTabTitle(textArea);
+            } catch (IOException e) {
+                showError("Could not save file.");
+            }
+        }
+    }
+
+    private void saveAllFiles() {
+        for (JTextArea textArea : fileMap.keySet()) {
+            if (!savedStatusMap.get(textArea)) {
+                File file = fileMap.get(textArea);
+                if (file == null) {
+                    if (fileChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+                        file = fileChooser.getSelectedFile();
+                        if (!file.getName().toLowerCase().endsWith(".txt")) {
+                            file = new File(file.getAbsolutePath() + ".txt");
+                        }
+                        fileMap.put(textArea, file);
+                    } else {
+                        continue; // Skip this file if user cancels save dialog
+                    }
+                }
+
+                try (BufferedWriter writer = new BufferedWriter(new FileWriter(file))) {
+                    textArea.write(writer);
+                    savedStatusMap.put(textArea, true);
+                    updateTabTitle(textArea);
+                } catch (IOException e) {
+                    showError("Could not save file: " + (file != null ? file.getName() : "Untitled"));
+                }
+            }
+        }
+    }
+
+    private boolean confirmSave(JTextArea textArea) {
+        if (!savedStatusMap.get(textArea)) {
+            String fileName = fileMap.get(textArea) != null ? fileMap.get(textArea).getName() : "Untitled";
+            int option = JOptionPane.showConfirmDialog(this,
+                    "Do you want to save changes to " + fileName + "?", "Save", JOptionPane.YES_NO_CANCEL_OPTION);
+            if (option == JOptionPane.CANCEL_OPTION) return false;
+            if (option == JOptionPane.YES_OPTION) {
+                File file = fileMap.get(textArea);
+                if (file == null) {
+                    if (fileChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+                        file = fileChooser.getSelectedFile();
+                        if (!file.getName().toLowerCase().endsWith(".txt")) {
+                            file = new File(file.getAbsolutePath() + ".txt");
+                        }
+                        fileMap.put(textArea, file);
+                    } else {
+                        return false;
+                    }
+                }
+
+                try (BufferedWriter writer = new BufferedWriter(new FileWriter(file))) {
+                    textArea.write(writer);
+                    savedStatusMap.put(textArea, true);
+                } catch (IOException e) {
+                    showError("Could not save file.");
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private void closeCurrentTab() {
+        JTextArea textArea = getCurrentTextArea();
+        if (textArea != null && confirmSave(textArea)) {
+            int index = tabbedPane.getSelectedIndex();
+            tabbedPane.remove(index);
+            fileMap.remove(textArea);
+            savedStatusMap.remove(textArea);
+            undoManagerMap.remove(textArea);
+
+            if (tabbedPane.getTabCount() == 0) {
+                addNewTab("Untitled " + (++untitledCount), null);
+            }
+        }
+    }
+
+    private void exitApplication() {
+        boolean allConfirmed = true;
+
+        // Check all tabs
+        for (int i = 0; i < tabbedPane.getTabCount(); i++) {
+            JTextArea textArea = getTextAreaFromTab(i);
+            if (!confirmSave(textArea)) {
+                allConfirmed = false;
+                break;
+            }
+        }
+
+        if (allConfirmed) {
+            System.exit(0);
+        }
+    }
+
+    private void chooseFont() {
+        JTextArea textArea = getCurrentTextArea();
+        if (textArea != null) {
+            Font currentFont = textArea.getFont();
+            FontDialog fontDialog = new FontDialog(this, currentFont);
+            fontDialog.setVisible(true);
+            Font selectedFont = fontDialog.getSelectedFont();
+            if (selectedFont != null) {
+                textArea.setFont(selectedFont);
+            }
+        }
+    }
+
+    private void toggleTheme() {
+        isDarkTheme = !isDarkTheme;
+        Color bgColor = isDarkTheme ? Color.DARK_GRAY : Color.WHITE;
+        Color fgColor = isDarkTheme ? Color.WHITE : Color.BLACK;
+
+        for (int i = 0; i < tabbedPane.getTabCount(); i++) {
+            JTextArea textArea = getTextAreaFromTab(i);
+            if (textArea != null) {
+                textArea.setBackground(bgColor);
+                textArea.setForeground(fgColor);
+                textArea.setCaretColor(fgColor);
+            }
+        }
+    }
+
+    private void startAutosave() {
+        autosaveTimer = new Timer(true);
+        autosaveTimer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                for (JTextArea textArea : fileMap.keySet()) {
+                    File file = fileMap.get(textArea);
+                    if (!savedStatusMap.get(textArea) && file != null) {
+                        try (BufferedWriter writer = new BufferedWriter(new FileWriter(file))) {
+                            textArea.write(writer);
+                            savedStatusMap.put(textArea, true);
+                            SwingUtilities.invokeLater(() -> updateTabTitle(textArea));
+                        } catch (IOException e) {
+                            // ignore autosave error silently
+                        }
+                    }
+                }
+            }
+        }, 30000, 30000); // every 30 seconds
+    }
+
+    private void findReplace() {
+        JTextArea textArea = getCurrentTextArea();
+        if (textArea != null) {
+            FindReplaceDialog findReplaceDialog = new FindReplaceDialog(this, textArea);
+            findReplaceDialog.setVisible(true);
+        }
+    }
+
+    private void showError(String message) {
+        JOptionPane.showMessageDialog(this, message, "Error", JOptionPane.ERROR_MESSAGE);
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(n::new);
+    }
+}
+
+class FontDialog extends JDialog {
+    private Font selectedFont;
+    private JComboBox<String> fontFamilyCombo;
+    private JComboBox<Integer> fontSizeCombo;
+    private JTextArea previewArea;
+
+    public FontDialog(JFrame parent, Font currentFont) {
+        super(parent, "Choose Font", true);
+        setSize(400, 300);
+        setLocationRelativeTo(parent);
+
+        selectedFont = currentFont;
+
+        String[] fontFamilies = GraphicsEnvironment.getLocalGraphicsEnvironment().getAvailableFontFamilyNames();
+        fontFamilyCombo = new JComboBox<>(fontFamilies);
+        fontFamilyCombo.setSelectedItem(currentFont.getFamily());
+
+        Integer[] fontSizes = {8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72};
+        fontSizeCombo = new JComboBox<>(fontSizes);
+        fontSizeCombo.setSelectedItem(currentFont.getSize());
+
+        previewArea = new JTextArea("The quick brown fox jumps over the lazy dog");
+        previewArea.setFont(currentFont);
+        previewArea.setEditable(false);
+        previewArea.setLineWrap(true);
+        previewArea.setWrapStyleWord(true);
+
+        JButton okButton = new JButton("OK");
+        okButton.addActionListener(e -> {
+            selectedFont = new Font(
+                    (String) fontFamilyCombo.getSelectedItem(),
+                    Font.PLAIN,
+                    (Integer) fontSizeCombo.getSelectedItem()
+            );
+            dispose();
+        });
+
+        JButton cancelButton = new JButton("Cancel");
+        cancelButton.addActionListener(e -> {
+            selectedFont = null;
+            dispose();
+        });
+
+        fontFamilyCombo.addActionListener(e -> updatePreview());
+        fontSizeCombo.addActionListener(e -> updatePreview());
+
+        JPanel controlPanel = new JPanel();
+        controlPanel.add(new JLabel("Font:"));
+        controlPanel.add(fontFamilyCombo);
+        controlPanel.add(new JLabel("Size:"));
+        controlPanel.add(fontSizeCombo);
+
+        JPanel buttonPanel = new JPanel();
+        buttonPanel.add(okButton);
+        buttonPanel.add(cancelButton);
+
+        setLayout(new BorderLayout());
+        add(controlPanel, BorderLayout.NORTH);
+        add(new JScrollPane(previewArea), BorderLayout.CENTER);
+        add(buttonPanel, BorderLayout.SOUTH);
+    }
+
+    private void updatePreview() {
+        Font newFont = new Font(
+                (String) fontFamilyCombo.getSelectedItem(),
+                Font.PLAIN,
+                (Integer) fontSizeCombo.getSelectedItem()
+        );
+        previewArea.setFont(newFont);
+    }
+
+    public Font getSelectedFont() {
+        return selectedFont;
+    }
+}
+
+class FindReplaceDialog extends JDialog {
+    private JTextArea textArea;
+    private JTextField findField;
+    private JTextField replaceField;
+    private JCheckBox matchCaseCheckBox;
+
+    public FindReplaceDialog(JFrame parent, JTextArea textArea) {
+        super(parent, "Find and Replace", false);
+        setSize(400, 200);
+        setLocationRelativeTo(parent);
+        this.textArea = textArea;
+
+        findField = new JTextField(20);
+        replaceField = new JTextField(20);
+        matchCaseCheckBox = new JCheckBox("Match case");
+
+        JButton findButton = new JButton("Find");
+        findButton.addActionListener(e -> find());
+
+        JButton replaceButton = new JButton("Replace");
+        replaceButton.addActionListener(e -> replace());
+
+        JButton replaceAllButton = new JButton("Replace All");
+        replaceAllButton.addActionListener(e -> replaceAll());
+
+        JButton closeButton = new JButton("Close");
+        closeButton.addActionListener(e -> dispose());
+
+        JPanel inputPanel = new JPanel(new GridLayout(3, 2, 5, 5));
+        inputPanel.add(new JLabel("Find:"));
+        inputPanel.add(findField);
+        inputPanel.add(new JLabel("Replace with:"));
+        inputPanel.add(replaceField);
+        inputPanel.add(new JLabel(""));
+        inputPanel.add(matchCaseCheckBox);
+
+        JPanel buttonPanel = new JPanel();
+        buttonPanel.add(findButton);
+        buttonPanel.add(replaceButton);
+        buttonPanel.add(replaceAllButton);
+        buttonPanel.add(closeButton);
+
+        setLayout(new BorderLayout());
+        add(inputPanel, BorderLayout.CENTER);
+        add(buttonPanel, BorderLayout.SOUTH);
+    }
+
+    private void find() {
+        String text = textArea.getText();
+        String search = findField.getText();
+        if (text.isEmpty() || search.isEmpty()) return;
+
+        boolean matchCase = matchCaseCheckBox.isSelected();
+        String compareText = matchCase ? text : text.toLowerCase();
+        String compareSearch = matchCase ? search : search.toLowerCase();
+
+        int start = textArea.getSelectionEnd();
+        int foundPos = compareText.indexOf(compareSearch, start);
+
+        if (foundPos == -1 && start > 0) {
+            // Wrap around
+            foundPos = compareText.indexOf(compareSearch);
+        }
+
+        if (foundPos != -1) {
+            textArea.select(foundPos, foundPos + search.length());
+            textArea.grabFocus();
+        } else {
+            JOptionPane.showMessageDialog(this, "Text not found", "Find", JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+
+    private void replace() {
+        if (textArea.getSelectedText() != null) {
+            textArea.replaceSelection(replaceField.getText());
+        }
+        find();
+    }
+
+    private void replaceAll() {
+        String text = textArea.getText();
+        String search = findField.getText();
+        String replace = replaceField.getText();
+
+        if (text.isEmpty() || search.isEmpty()) return;
+
+        boolean matchCase = matchCaseCheckBox.isSelected();
+        if (!matchCase) {
+            text = text.toLowerCase();
+            search = search.toLowerCase();
+        }
+
+        int count = 0;
+        int index = 0;
+        StringBuilder result = new StringBuilder(textArea.getText());
+
+        while ((index = text.indexOf(search, index)) != -1) {
+            result.replace(index, index + search.length(), replace);
+            text = text.substring(0, index) + replace + text.substring(index + search.length());
+            index += replace.length();
+            count++;
+        }
+
+        textArea.setText(result.toString());
+        JOptionPane.showMessageDialog(this, "Replaced " + count + " occurrences", "Replace All", JOptionPane.INFORMATION_MESSAGE);
+    }
+}
